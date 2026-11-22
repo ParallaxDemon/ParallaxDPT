@@ -24,11 +24,13 @@ method bodies before applying the Parallax shell to the remaining DEX:
 ```shell
 java -jar parallax.jar -f app.apk --vmp-jar /path/to/vm-protect.jar
 java -jar parallax.jar -f app.apk --vmp-jar /path/to/vm-protect.jar --vmp-rules /path/to/convertRules.txt
+java -jar parallax.jar -f app.apk --vmp-jar /path/to/vm-protect.jar --vmp-min-coverage 70
 ```
 
 The VM converter, Android SDK and NDK must be configured as required by that
 converter. Parallax invokes it with `apk <input> [rules]`, checks that it
-produced an APK, and fails instead of packaging a stale or missing result.
+produced an APK with at least one original method converted to a native entry,
+and fails instead of packaging a stale, missing, or zero-conversion result.
 Conversion runs in a fresh temporary directory; Parallax then signs the final
 APK using its usual signing path. This option applies only to APK inputs.
 

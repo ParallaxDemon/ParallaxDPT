@@ -124,6 +124,7 @@ public class Parallax {
         options.addOption(new Option(Const.OPTION_VERIFY_SIGN, Const.OPTION_VERIFY_SIGN_LONG, false, "Enable runtime app signature verification. The certificate SHA-256 is computed automatically from the signing keystore.\n"));
         options.addOption(new Option(null, "vmp-jar", true, "Run the provided nmmp-compatible VM converter JAR before shell protection (APK only)."));
         options.addOption(new Option(null, "vmp-rules", true, "Optional VM conversion rules file; without it the converter selects methods."));
+        options.addOption(new Option(null, "vmp-min-coverage", true, "Minimum percentage of original eligible method bodies converted to native (0-100; requires --vmp-jar)."));
         options.addOption(new Option(null, Const.OPTION_DISABLE_FRIDA_DETECT_LONG, false, "Disable runtime Frida detection.\n"));
         options.addOption(new Option(null, Const.OPTION_DISABLE_CRC_DETECT_LONG, false, "Disable runtime libc .text CRC detection.\n"));
         options.addOption(new Option(null, Const.OPTION_DISABLE_ANTI_DEBUG_LONG, false, "Disable runtime anti-debug.\n"));
@@ -157,15 +158,24 @@ public class Parallax {
             }
 
             String filePath = commandLine.getOptionValue(Const.OPTION_INPUT_FILE);
-            if (commandLine.hasOption("vmp-rules") && !commandLine.hasOption("vmp-jar")) {
-                usage(options, "--vmp-rules requires --vmp-jar");
+            if ((commandLine.hasOption("vmp-rules") || commandLine.hasOption("vmp-min-coverage"))
+                    && !commandLine.hasOption("vmp-jar")) {
+                usage(options, "VM options require --vmp-jar");
                 return null;
             }
             if (commandLine.hasOption("vmp-jar")) {
+                int minimumCoverage = 0;
+                if (commandLine.hasOption("vmp-min-coverage")) {
+                    try {
+                        minimumCoverage = Integer.parseInt(commandLine.getOptionValue("vmp-min-coverage"));
+                    } catch (NumberFormatException e) {
+                        throw new IOException("--vmp-min-coverage must be an integer from 0 to 100", e);
+                    }
+                }
                 File rules = commandLine.hasOption("vmp-rules")
                         ? new File(commandLine.getOptionValue("vmp-rules")) : null;
                 filePath = VmpStage.convert(new File(filePath),
-                        new File(commandLine.getOptionValue("vmp-jar")), rules).getAbsolutePath();
+                        new File(commandLine.getOptionValue("vmp-jar")), rules, minimumCoverage).getAbsolutePath();
             }
 
             int riskCheckFlags = 0;
