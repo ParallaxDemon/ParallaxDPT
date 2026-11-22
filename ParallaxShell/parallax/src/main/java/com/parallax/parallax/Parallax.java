@@ -31,15 +31,20 @@ public class Parallax {
     private static final String MANIFEST_BUILD_KEY_ATTR = "Parallax-Build-Key";
 
     public static void main(String[] args) {
+        int exitStatus = 0;
         try {
             AndroidPackage androidPackage = parseOptions(args);
-            if(androidPackage == null) {
-                return;
+            if(androidPackage != null) {
+                androidPackage.protect();
             }
-            androidPackage.protect();
         } catch (Exception e){
             e.printStackTrace();
-            System.exit(1);
+            exitStatus = 1;
+        } finally {
+            VmpStage.cleanup();
+        }
+        if (exitStatus != 0) {
+            System.exit(exitStatus);
         }
     }
 

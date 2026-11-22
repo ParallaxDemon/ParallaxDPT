@@ -11,11 +11,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.stream.Stream;
 
 /**
  * Optional, separate VM conversion pass. The VM converter is supplied by the
@@ -23,6 +25,26 @@ import java.util.zip.ZipFile;
  */
 public final class VmpStage {
     private VmpStage() { }
+    private static Path temporaryWorkspace;
+
+    public static void cleanup() {
+        Path workspace = temporaryWorkspace;
+        temporaryWorkspace = null;
+        if (workspace == null) {
+            return;
+        }
+        try (Stream<Path> paths = Files.walk(workspace)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException e) {
+                    LogUtils.warn("Could not remove VM temporary file %s: %s", path, e.getMessage());
+                }
+            });
+        } catch (IOException e) {
+            LogUtils.warn("Could not clean VM workspace %s: %s", workspace, e.getMessage());
+        }
+    }
 
     public static File convert(File input, File converter, File rules, int minimumCoverage) throws IOException {
         if (minimumCoverage < 0 || minimumCoverage > 100) {
@@ -39,6 +61,7 @@ public final class VmpStage {
         }
 
         Path workspace = Files.createTempDirectory("parallax-vmp-");
+        temporaryWorkspace = workspace;
         Path staged = workspace.resolve(input.getName());
         Files.copy(input.toPath(), staged, StandardCopyOption.REPLACE_EXISTING);
         String name = input.getName();
