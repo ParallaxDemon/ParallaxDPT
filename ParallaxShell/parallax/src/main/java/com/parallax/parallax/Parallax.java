@@ -39,6 +39,7 @@ public class Parallax {
             androidPackage.protect();
         } catch (Exception e){
             e.printStackTrace();
+            System.exit(1);
         }
     }
 
