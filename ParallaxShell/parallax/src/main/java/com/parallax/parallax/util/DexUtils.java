@@ -32,7 +32,6 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.security.SecureRandom;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -41,7 +40,6 @@ import java.util.regex.Pattern;
  * @author parallax
  */
 public class DexUtils {
-    private final static Map<String,Integer> codeOffAppearMap = new ConcurrentHashMap<>();
 
     /**
      * Classes with these prefixes must be kept in place: with -K(keep-classes) they are
@@ -153,8 +151,8 @@ public class DexUtils {
         return new ImmutablePair<>(keepClassesCount.get(), totalClassesCount.get());
     }
 
-    private static void saveCodeOffAppear(Dex dex, int dexIndex) {
-        codeOffAppearMap.clear();
+    private static Map<Integer, Integer> countCodeOffAppear(Dex dex) {
+        Map<Integer, Integer> counts = new HashMap<>();
         Iterable<ClassDef> classDefs = dex.classDefs();
 
         for (ClassDef classDef : classDefs) {
@@ -167,11 +165,12 @@ public class DexUtils {
             ClassData.Method[] methods = classData.allMethods();
             for (ClassData.Method method : methods) {
                 if (method.getCodeOffset() != 0) {
-                    codeOffAppearMap.merge(dexIndex + "_" + method.getCodeOffset(), 1, Integer::sum);
+                    counts.merge(method.getCodeOffset(), 1, Integer::sum);
                 }
             }
         }
 
+        return counts;
     }
 
     public static void renamePackageName(File dexFilePath, File newDexFilePath, String slashShellPackageName) throws IOException {
@@ -201,19 +200,6 @@ public class DexUtils {
         DexFileFactory.writeDexFile(newDexFilePath.getAbsolutePath(), dexFile);
     }
 
-    private static int getCodeOffAppearCount(int dexIndex, int codeOff) {
-        try {
-            Integer appearCount = codeOffAppearMap.get(dexIndex + "_" + codeOff);
-            if(appearCount != null) {
-                return appearCount;
-            }
-        }
-        catch (Exception e){
-            e.printStackTrace();
-        }
-        return 0;
-    }
-
     /**
      * Get dex file number
      * ex：classes2.dex return 1
@@ -240,20 +226,20 @@ public class DexUtils {
                                                       File outDexFile,
                                                       String packageName,
                                                       boolean dumpCode,
-                                                      boolean smaller) {
+                                                      boolean smaller) throws IOException {
         List<Instruction> instructionList = new ArrayList<>();
         Dex dex = null;
         RandomAccessFile randomAccessFile = null;
         byte[] dexData = IoUtils.readFile(dexFile.getAbsolutePath());
         IoUtils.writeFile(outDexFile.getAbsolutePath(),dexData);
         JSONArray dumpJSON = new JSONArray();
+        int candidateMethods = 0;
         try {
             dex = new Dex(dexFile);
-            int dexNumber = getDexNumber(dexFile.getName());
             randomAccessFile = new RandomAccessFile(outDexFile, "rw");
             Iterable<ClassDef> classDefs = dex.classDefs();
 
-            saveCodeOffAppear(dex, dexNumber);
+            Map<Integer, Integer> codeOffCounts = countCodeOffAppear(dex);
 
             for (ClassDef classDef : classDefs) {
                 // Skip exclude classes name
@@ -275,7 +261,10 @@ public class DexUtils {
 
                 ClassData.Method[] methods = classData.allMethods();
                 for (ClassData.Method method : methods) {
-                    if(getCodeOffAppearCount(dexNumber, method.getCodeOffset()) > 1) {
+                    if (method.getCodeOffset() != 0) {
+                        candidateMethods++;
+                    }
+                    if(codeOffCounts.getOrDefault(method.getCodeOffset(), 0) > 1) {
                         LogUtils.noisy("codeoff 0x%x appear many times", method.getCodeOffset());
                         continue;
                     }
@@ -290,8 +279,12 @@ public class DexUtils {
                 classJSONObject.put(humanizeTypeName,classJSONArray);
                 dumpJSON.put(classJSONObject);
             }
+            LogUtils.info("DEX %s: protected %d of %d eligible method bodies (%.1f%%)",
+                    dexFile.getName(), instructionList.size(), candidateMethods,
+                    candidateMethods == 0 ? 100.0 : 100.0 * instructionList.size() / candidateMethods);
         }
         catch (Exception e){
+            throw new IOException("Failed to extract methods from " + dexFile.getName(), e);
         }
         finally {
             IoUtils.close(randomAccessFile);
