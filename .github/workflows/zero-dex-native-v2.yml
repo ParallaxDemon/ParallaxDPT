@@ -1,0 +1,177 @@
+name: Parallax Zero-DEX Native V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - parallax-zero-dex-native-v2
+    paths:
+      - "ParallaxZeroDexV2/**"
+      - ".github/workflows/zero-dex-native-v2.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "ParallaxZeroDexV2/**"
+      - ".github/workflows/zero-dex-native-v2.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-zero-dex-v2:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zip unzip
+          sdkmanager --install \
+            'platforms;android-36' \
+            'build-tools;36.0.0' \
+            'ndk;27.0.12077973'
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v1
+        with:
+          cmake-version: "3.31.1"
+
+      - name: Build native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NDK="$ANDROID_HOME/ndk/27.0.12077973"
+          STAGE="$RUNNER_TEMP/parallax-zero-dex-v2-stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/lib"
+
+          for ABI in armeabi-v7a arm64-v8a x86 x86_64; do
+            BUILD_DIR="$RUNNER_TEMP/parallax-zero-dex-v2-$ABI"
+            cmake \
+              -S "$GITHUB_WORKSPACE/ParallaxZeroDexV2" \
+              -B "$BUILD_DIR" \
+              -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI="$ABI" \
+              -DANDROID_PLATFORM=android-21 \
+              -DANDROID_STL=c++_static \
+              -DCMAKE_BUILD_TYPE=Release
+            cmake --build "$BUILD_DIR" --target ParallaxN --parallel 2
+            mkdir -p "$STAGE/lib/$ABI"
+            cp "$BUILD_DIR/libParallaxN.so" "$STAGE/lib/$ABI/libParallaxN.so"
+          done
+
+          test "$(find "$STAGE/lib" -type f -name 'libParallaxN.so' | wc -l)" -eq 4
+
+      - name: Package APK with zero DEX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          PLATFORM_JAR="$ANDROID_HOME/platforms/android-36/android.jar"
+          STAGE="$RUNNER_TEMP/parallax-zero-dex-v2-stage"
+          BASE_APK="$RUNNER_TEMP/parallax-zero-dex-v2-base.apk"
+          UNSIGNED_APK="$RUNNER_TEMP/parallax-zero-dex-v2-unsigned.apk"
+          ALIGNED_APK="$RUNNER_TEMP/parallax-zero-dex-v2-aligned.apk"
+          OUT_DIR="$GITHUB_WORKSPACE/zero-dex-v2-output"
+          FINAL_APK="$OUT_DIR/parallax-zero-dex-native-v2.apk"
+
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+
+          "$BUILD_TOOLS/aapt2" link \
+            -o "$BASE_APK" \
+            -I "$PLATFORM_JAR" \
+            --manifest "$GITHUB_WORKSPACE/ParallaxZeroDexV2/AndroidManifest.xml" \
+            --min-sdk-version 21 \
+            --target-sdk-version 36 \
+            --version-code 2 \
+            --version-name 2.0.0 \
+            --rename-manifest-package com.parallax.zerodexv2
+
+          cp "$BASE_APK" "$UNSIGNED_APK"
+          (
+            cd "$STAGE"
+            zip -q -9 -r "$UNSIGNED_APK" lib
+          )
+
+          "$BUILD_TOOLS/zipalign" -f -P 16 -p 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+
+          keytool -genkeypair \
+            -keystore "$RUNNER_TEMP/parallax-zero-dex-v2.keystore" \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -dname "CN=Parallax Zero-DEX V2,O=Parallax,C=IN" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -noprompt
+
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/parallax-zero-dex-v2.keystore" \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out "$FINAL_APK" \
+            "$ALIGNED_APK"
+
+          "$BUILD_TOOLS/apksigner" verify --verbose "$FINAL_APK"
+          unzip -t "$FINAL_APK"
+
+      - name: Enforce zero-DEX invariant
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$GITHUB_WORKSPACE/zero-dex-v2-output/parallax-zero-dex-native-v2.apk"
+          CONTENTS="$GITHUB_WORKSPACE/zero-dex-v2-output/apk-contents.txt"
+
+          unzip -Z1 "$APK" | sort | tee "$CONTENTS"
+
+          DEX_LIST="$(unzip -Z1 "$APK" | grep -E '(^|/)classes([0-9]+)?\.dex$' || true)"
+          if [ -n "$DEX_LIST" ]; then
+            echo "Zero-DEX invariant failed. Found:" >&2
+            echo "$DEX_LIST" >&2
+            exit 1
+          fi
+
+          SO_COUNT="$(unzip -Z1 "$APK" | grep -E '^lib/(armeabi-v7a|arm64-v8a|x86|x86_64)/libParallaxN\.so$' | wc -l)"
+          if [ "$SO_COUNT" -ne 4 ]; then
+            echo "Expected four native ABI libraries, found $SO_COUNT" >&2
+            exit 1
+          fi
+
+          echo "Verified: zero classes*.dex entries and four libParallaxN.so ABI libraries."
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/zero-dex-v2-output"
+          sha256sum parallax-zero-dex-native-v2.apk > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: parallax-zero-dex-native-v2-${{ github.sha }}
+          path: zero-dex-v2-output/
+          if-no-files-found: error
+          retention-days: 30
