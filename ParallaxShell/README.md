@@ -16,6 +16,30 @@ Go to [Releases](https://github.com/parallax/parallax-shell/releases/latest) dow
 java -jar parallax.jar -f /path/to/android-package-file
 ```
 
+### Optional VM conversion for APKs
+
+Pass a locally supplied, nmmp-compatible VM converter to convert supported
+method bodies before applying the Parallax shell to the remaining DEX:
+
+```shell
+java -jar parallax.jar -f app.apk --vmp-jar /path/to/vm-protect.jar
+java -jar parallax.jar -f app.apk --vmp-jar /path/to/vm-protect.jar --vmp-rules /path/to/convertRules.txt
+```
+
+The VM converter, Android SDK and NDK must be configured as required by that
+converter. Parallax invokes it with `apk <input> [rules]`, checks that it
+produced an APK, and fails instead of packaging a stale or missing result.
+Conversion runs in a fresh temporary directory; Parallax then signs the final
+APK using its usual signing path. This option applies only to APK inputs.
+
+This is a two-stage integration, not a Parallax VM implementation. The VM
+backend decides which methods it can convert. Constructors, class initializers,
+excluded or unsupported methods, and remaining Java/Kotlin classes may still
+require ART bytecode. The shell still restores remaining method instructions in
+DEX memory. Test startup and app functionality on actual Android devices before
+distributing a protected APK. Root/Frida checks do not make a client-side app
+immune to runtime dumping.
+
 ### Manual builds
 
 ```shell

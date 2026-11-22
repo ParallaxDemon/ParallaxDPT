@@ -101,7 +101,7 @@ public class Parallax {
         return null;
     }
 
-    private static AndroidPackage parseOptions(String[] args) {
+    private static AndroidPackage parseOptions(String[] args) throws IOException {
         Options options = new Options();
         options.addOption(new Option(Const.OPTION_VERSION, Const.OPTION_VERSION_LONG, false, "Show program's version number."));
         options.addOption(new Option(Const.OPTION_NO_SIGN_PACKAGE, Const.OPTION_NO_SIGN_PACKAGE_LONG, false, "Do not sign package."));
@@ -122,6 +122,8 @@ public class Parallax {
                 + "- x86\n"
                 + "- x86_64"));
         options.addOption(new Option(Const.OPTION_VERIFY_SIGN, Const.OPTION_VERIFY_SIGN_LONG, false, "Enable runtime app signature verification. The certificate SHA-256 is computed automatically from the signing keystore.\n"));
+        options.addOption(new Option(null, "vmp-jar", true, "Run the provided nmmp-compatible VM converter JAR before shell protection (APK only)."));
+        options.addOption(new Option(null, "vmp-rules", true, "Optional VM conversion rules file; without it the converter selects methods."));
         options.addOption(new Option(null, Const.OPTION_DISABLE_FRIDA_DETECT_LONG, false, "Disable runtime Frida detection.\n"));
         options.addOption(new Option(null, Const.OPTION_DISABLE_CRC_DETECT_LONG, false, "Disable runtime libc .text CRC detection.\n"));
         options.addOption(new Option(null, Const.OPTION_DISABLE_ANTI_DEBUG_LONG, false, "Disable runtime anti-debug.\n"));
@@ -155,6 +157,16 @@ public class Parallax {
             }
 
             String filePath = commandLine.getOptionValue(Const.OPTION_INPUT_FILE);
+            if (commandLine.hasOption("vmp-rules") && !commandLine.hasOption("vmp-jar")) {
+                usage(options, "--vmp-rules requires --vmp-jar");
+                return null;
+            }
+            if (commandLine.hasOption("vmp-jar")) {
+                File rules = commandLine.hasOption("vmp-rules")
+                        ? new File(commandLine.getOptionValue("vmp-rules")) : null;
+                filePath = VmpStage.convert(new File(filePath),
+                        new File(commandLine.getOptionValue("vmp-jar")), rules).getAbsolutePath();
+            }
 
             int riskCheckFlags = 0;
             if (commandLine.hasOption(Const.OPTION_DISABLE_FRIDA_DETECT_LONG)) {
