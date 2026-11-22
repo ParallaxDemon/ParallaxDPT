@@ -2,6 +2,7 @@
 // Created by parallax
 //
 
+#include <algorithm>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -94,14 +95,31 @@ void patchMethod(uint8_t *begin,
         }
 
         auto codeItemVec = dexIt->second;
+        if (UNLIKELY(codeItemVec == nullptr || methodIdx >= codeItemVec->size())) {
+            DLOGE("invalid method index %u in dex %d", methodIdx, dexIndex);
+            return;
+        }
         auto codeItem = codeItemVec->at(methodIdx);
         if (LIKELY(codeItem != nullptr)) {
             if(codeOff == 0) {
                 NLOG("dex: %d methodIndex: %d no need patch!",dexIndex,methodIdx);
                 return;
             }
+            // A malformed code item must not turn the restore operation into an
+            // out-of-bounds write. Verify both the header and its instruction array.
+            if (UNLIKELY(begin == nullptr || dexSize < 16 || codeOff > dexSize - 16)) {
+                DLOGE("invalid code offset %u in dex %d", codeOff, dexIndex);
+                return;
+            }
 
             auto *dexCodeItem = (dex::CodeItem *)(begin + codeOff);
+            const uint64_t available = static_cast<uint64_t>(dexSize) - codeOff - 16;
+            const uint64_t expected = static_cast<uint64_t>(dexCodeItem->insns_size_in_code_units_) * 2;
+            if (UNLIKELY(expected > available || codeItem->getInsnsSize() != expected
+                         || codeItem->getInsns() == nullptr)) {
+                DLOGE("invalid instruction length in dex %d method %u", dexIndex, methodIdx);
+                return;
+            }
 
             auto *realInsnsPtr = (uint8_t *)(dexCodeItem->insns_);
 
@@ -124,6 +142,7 @@ void patchMethod(uint8_t *begin,
                     tmp[i] = (uint8_t)(enc[i] ^ ((xorKey >> shift) & 0xffu));
                 }
                 memcpy(realInsnsPtr, tmp.data(), sz);
+                std::fill(tmp.begin(), tmp.end(), 0);
             }
         }
         else{

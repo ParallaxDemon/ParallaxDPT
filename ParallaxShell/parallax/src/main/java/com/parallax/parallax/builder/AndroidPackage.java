@@ -50,8 +50,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public abstract class AndroidPackage {
 
@@ -656,11 +658,12 @@ public abstract class AndroidPackage {
 
     public void extractDexCode(String packageDir, String dexCodeSavePath) {
         List<File> dexFiles = getDexFiles(getDexDir(packageDir));
-        Map<Integer,List<Instruction>> instructionMap = new HashMap<>();
+        Map<Integer,List<Instruction>> instructionMap = new ConcurrentHashMap<>();
         String appNameNew = Const.KEY_CODE_ITEM_STORE_NAME;
         String dataOutputPath = dexCodeSavePath + File.separator + appNameNew;
 
         CountDownLatch countDownLatch = new CountDownLatch(dexFiles.size());
+        AtomicReference<Throwable> extractionFailure = new AtomicReference<>();
         AtomicInteger totalClassesCount = new AtomicInteger(0);
         AtomicInteger keepClassesCount = new AtomicInteger(0);
 
@@ -674,10 +677,10 @@ public abstract class AndroidPackage {
         }
         for(File dexFile : dexFiles) {
             ThreadPool.getInstance().execute(() -> {
+                try {
                 final int dexNo = DexUtils.getDexNumber(dexFile.getName());
                 if(dexNo < 0) {
-                    countDownLatch.countDown();
-                    return;
+                    throw new IllegalArgumentException("Unexpected dex name: " + dexFile.getName());
                 }
 
                 File injectedDexFile = new File(dexFile.getAbsolutePath() + "_inject.dex");
@@ -688,12 +691,11 @@ public abstract class AndroidPackage {
                             shellConfig.getJniClassNameSig()
                     );
 
-                    dexFile.delete();
-
-                    injectedDexFile.renameTo(dexFile);
+                    Files.move(injectedDexFile.toPath(), dexFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 }
                 catch (Exception e) {
                     injectedDexFile.delete();
+                    throw new IllegalStateException("DEX JNI injection failed: " + dexFile.getName(), e);
                 }
 
                 if(isKeepClasses() && DexUtils.dexContainsKeepInPlace(dexFile)) {
@@ -712,13 +714,11 @@ public abstract class AndroidPackage {
                         keepClassesCount.set(keepClassesCount.get() + classesCountPair.getKey());
                         totalClassesCount.set(totalClassesCount.get() + classesCountPair.getValue());
 
-                        dexFile.delete();
-
-                        splitDex.renameTo(dexFile);
+                        Files.move(splitDex.toPath(), dexFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     } catch (Exception e) {
-                        LogUtils.warn("WARNING: split %s fail", dexFile.getName());
                         keepDex.delete();
                         splitDex.delete();
+                        throw new IllegalStateException("DEX split failed: " + dexFile.getName(), e);
                     }
                 }
 
@@ -733,10 +733,10 @@ public abstract class AndroidPackage {
 
                 try {
                     DexUtils.writeHashes(extractedDexFile, dexFileRightHashes);
-                    dexFile.delete();
-                    dexFileRightHashes.renameTo(dexFile);
+                    Files.move(dexFileRightHashes.toPath(), dexFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 }
                 catch (Exception e) {
+                    throw new IllegalStateException("DEX hash update failed: " + dexFile.getName(), e);
                 }
                 finally {
                     if(extractedDexFile.exists()) {
@@ -748,7 +748,11 @@ public abstract class AndroidPackage {
                     String dexSignature = DexUtils.getDexSignature(dexFile);
                     ShellConfig.getInstance().setDexSign(dexSignature);
                 }
-                countDownLatch.countDown();
+                } catch (Throwable failure) {
+                    extractionFailure.compareAndSet(null, failure);
+                } finally {
+                    countDownLatch.countDown();
+                }
             });
 
         }
@@ -758,7 +762,13 @@ public abstract class AndroidPackage {
         try {
             countDownLatch.await();
         }
-        catch (Exception ignored){
+        catch (InterruptedException e){
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while protecting DEX files", e);
+        }
+
+        if (extractionFailure.get() != null) {
+            throw new IllegalStateException("DEX protection failed; output must not be packaged", extractionFailure.get());
         }
 
         if(isKeepClasses()) {
